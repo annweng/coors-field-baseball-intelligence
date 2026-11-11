@@ -66,11 +66,13 @@ def pitches_to_plate_appearances(
     else:
         terminal["outcome"] = classify_event(None)
 
-    batter_name = terminal["player_name"] if "player_name" in terminal.columns else None
-    terminal["batter_name"] = batter_name
+    # Statcast `player_name` is the pitcher on pitch rows, not the batter — do not map to batter_name.
+    terminal["batter_name"] = None
 
     if "pitcher_name" in terminal.columns:
         terminal["pitcher_name_col"] = terminal["pitcher_name"]
+    elif "player_name" in terminal.columns:
+        terminal["pitcher_name_col"] = terminal["player_name"]
     else:
         terminal["pitcher_name_col"] = None
 

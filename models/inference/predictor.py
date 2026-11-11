@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+from xgboost import XGBClassifier
 
-from data_pipeline.features.constants import OUTCOME_CLASSES, COORS_FIELD_STADIUM_IDS
+from data_pipeline.features.constants import COORS_FIELD_STADIUM_IDS, OUTCOME_CLASSES
 from data_pipeline.features.cache import load_or_build_features
 from data_pipeline.load.reader import load_plate_appearances_frame
 from data_pipeline.settings import settings
@@ -30,11 +30,25 @@ def _resolve_artifact(path: Path | None = None) -> Path:
     raise FileNotFoundError("No model artifact found. Run models.train_advanced first.")
 
 
+def _load_bundle_and_model(path: Path) -> tuple[dict, object]:
+    """Prefer portable .xgb.json + .meta.joblib (Windows/Linux); fall back to full joblib."""
+    meta_path = path.parent / f"{path.stem}.meta.joblib"
+    json_path = path.parent / f"{path.stem}.xgb.json"
+    if meta_path.exists() and json_path.exists():
+        bundle = joblib.load(meta_path)
+        clf = XGBClassifier()
+        clf.load_model(json_path)
+        return bundle, clf
+
+    bundle = joblib.load(path)
+    return bundle, bundle["model"]
+
+
 class PaOutcomePredictor:
     def __init__(self, artifact_path: Path | None = None) -> None:
         path = _resolve_artifact(artifact_path)
-        bundle = joblib.load(path)
-        self.model = bundle["model"]
+        bundle, model = _load_bundle_and_model(path)
+        self.model = model
         self.feature_columns: list[str] = bundle["feature_columns"]
         self.outcome_classes: list[str] = bundle.get("outcome_classes", list(OUTCOME_CLASSES))
         self.model_version: str = bundle.get("model_version", path.stem)
@@ -52,8 +66,11 @@ class PaOutcomePredictor:
         x = x[self.feature_columns]
         probas = self.model.predict_proba(x)
         classes = list(self.model.classes_)
-        order = [classes.index(c) for c in OUTCOME_CLASSES if c in classes]
-        ordered = probas[:, order]
+        if classes and not isinstance(classes[0], str):
+            ordered = probas[:, : len(OUTCOME_CLASSES)]
+        else:
+            order = [classes.index(c) for c in OUTCOME_CLASSES if c in classes]
+            ordered = probas[:, order]
         return ordered / ordered.sum(axis=1, keepdims=True)
 
     def predict_matchup(
@@ -71,8 +88,16 @@ class PaOutcomePredictor:
 
         b_rows = featured[featured["batter_id"] == batter_id]
         p_rows = featured[featured["pitcher_id"] == pitcher_id]
-        if b_rows.empty or p_rows.empty:
-            raise ValueError("Insufficient history for batter or pitcher in selected season")
+        if b_rows.empty:
+            raise ValueError(
+                f"Batter {batter_id} has no plate appearances in {as_of_season} in this database "
+                "(forecasts need Statcast-loaded seasons)."
+            )
+        if p_rows.empty:
+            raise ValueError(
+                f"Player {pitcher_id} has no plate appearances as pitcher in {as_of_season}. "
+                "Select a pitcher who actually pitched that year (e.g. starter/reliever, not DH-only)."
+            )
 
         template = b_rows.sort_values("game_date").iloc[-1].copy()
         p_latest = p_rows.sort_values("game_date").iloc[-1]

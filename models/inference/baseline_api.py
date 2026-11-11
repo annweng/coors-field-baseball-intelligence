@@ -36,8 +36,15 @@ def baseline_matchup_probabilities(
 
     b_rows = featured[featured["batter_id"] == batter_id]
     p_rows = featured[featured["pitcher_id"] == pitcher_id]
-    if b_rows.empty or p_rows.empty:
-        raise ValueError("Insufficient history for batter or pitcher in selected season")
+    if b_rows.empty:
+        raise ValueError(
+            f"Batter {batter_id} has no plate appearances in {as_of_season} in this database."
+        )
+    if p_rows.empty:
+        raise ValueError(
+            f"Player {pitcher_id} has no plate appearances as pitcher in {as_of_season}. "
+            "Select a pitcher who pitched that year."
+        )
 
     row = b_rows.sort_values("game_date").iloc[-1].copy()
     p_last = p_rows.sort_values("game_date").iloc[-1]

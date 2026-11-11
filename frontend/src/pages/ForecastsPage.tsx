@@ -1,18 +1,24 @@
 import { useState } from "react";
-import { fetchPlayerForecast, fetchPlayerSummary, searchPlayers } from "../lib/api";
+import {
+  fetchPlayerAvailability,
+  fetchPlayerForecast,
+  fetchPlayerSummary,
+  searchPlayers,
+} from "../lib/api";
 
 const OUTCOME_LABELS: Record<string, string> = {
-  strikeout: "K",
-  walk: "BB",
-  hit_by_pitch: "HBP",
-  single: "1B",
-  double: "2B",
-  triple: "3B",
-  home_run: "HR",
-  other_out: "Out (other)",
+  strikeout: "Strikeout",
+  walk: "Walk",
+  hit_by_pitch: "Hit by pitch",
+  single: "Single",
+  double: "Double",
+  triple: "Triple",
+  home_run: "Home run",
+  other_out: "Other out (groundout, flyout, etc.)",
 };
 
 export default function ForecastsPage() {
+  const [season, setSeason] = useState(2024);
   const [batterQuery, setBatterQuery] = useState("");
   const [pitcherQuery, setPitcherQuery] = useState("");
   const [batterResults, setBatterResults] = useState<Array<{ mlb_player_id: number; full_name: string }>>([]);
@@ -21,20 +27,50 @@ export default function ForecastsPage() {
   const [batterName, setBatterName] = useState("");
   const [pitcherId, setPitcherId] = useState<number | null>(null);
   const [pitcherName, setPitcherName] = useState("");
+  const [batterPa, setBatterPa] = useState<number | null>(null);
+  const [pitcherPa, setPitcherPa] = useState<number | null>(null);
   const [stadiumCoors, setStadiumCoors] = useState(false);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [forecast, setForecast] = useState<Awaited<ReturnType<typeof fetchPlayerForecast>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searchingBatter, setSearchingBatter] = useState(false);
+  const [searchingPitcher, setSearchingPitcher] = useState(false);
 
   const onSearchBatter = async () => {
     if (batterQuery.length < 2) return;
-    setBatterResults((await searchPlayers(batterQuery)).players);
+    setSearchingBatter(true);
+    setError(null);
+    try {
+      const res = await searchPlayers(batterQuery);
+      setBatterResults(res.players);
+      if (res.players.length === 0) {
+        setError("No players found — try last name only, then click Search.");
+      }
+    } catch (e) {
+      setBatterResults([]);
+      setError(e instanceof Error ? e.message : "Search failed");
+    } finally {
+      setSearchingBatter(false);
+    }
   };
 
   const onSearchPitcher = async () => {
     if (pitcherQuery.length < 2) return;
-    setPitcherResults((await searchPlayers(pitcherQuery)).players);
+    setSearchingPitcher(true);
+    setError(null);
+    try {
+      const res = await searchPlayers(pitcherQuery);
+      setPitcherResults(res.players);
+      if (res.players.length === 0) {
+        setError("No pitchers found — try last name only, then click Search.");
+      }
+    } catch (e) {
+      setPitcherResults([]);
+      setError(e instanceof Error ? e.message : "Search failed");
+    } finally {
+      setSearchingPitcher(false);
+    }
   };
 
   const onSelectBatter = async (id: number, name: string) => {
@@ -42,19 +78,56 @@ export default function ForecastsPage() {
     setBatterName(name);
     setForecast(null);
     setError(null);
-    setSummary(await fetchPlayerSummary(id, 2024));
+    setSummary(null);
+    try {
+      const avail = await fetchPlayerAvailability(id, season);
+      setBatterPa(avail.pa_as_batter);
+      if (!avail.forecast_ok_batter) {
+        setError(
+          `${name} has no ${season} batting data in this database. Try another season or load that year via ETL.`,
+        );
+        return;
+      }
+      setSummary(await fetchPlayerSummary(id, season));
+    } catch (e) {
+      setBatterPa(null);
+      setError(e instanceof Error ? e.message : "Could not load batter stats");
+    }
   };
 
-  const onSelectPitcher = (id: number, name: string) => {
+  const onSelectPitcher = async (id: number, name: string) => {
     setPitcherId(id);
     setPitcherName(name);
     setForecast(null);
     setError(null);
+    try {
+      const avail = await fetchPlayerAvailability(id, season);
+      setPitcherPa(avail.pa_as_pitcher);
+      if (!avail.forecast_ok_pitcher) {
+        setError(
+          `${name} did not pitch in ${season} in this database (0 PAs as pitcher). ` +
+            "Pick a starter/reliever — not a DH-only hitter like Ohtani in 2024.",
+        );
+      }
+    } catch (e) {
+      setPitcherPa(null);
+      setError(e instanceof Error ? e.message : "Could not check pitcher");
+    }
   };
+
+  const canForecast =
+    batterId != null &&
+    pitcherId != null &&
+    (batterPa ?? 0) > 0 &&
+    (pitcherPa ?? 0) > 0;
 
   const onRunForecast = async () => {
     if (!batterId || !pitcherId) {
       setError("Select a batter and a pitcher.");
+      return;
+    }
+    if (!canForecast) {
+      setError("Batter and pitcher both need plate appearances in the selected season.");
       return;
     }
     setLoading(true);
@@ -64,7 +137,7 @@ export default function ForecastsPage() {
         batter_id: batterId,
         pitcher_id: pitcherId,
         stadium_id: stadiumCoors ? 19 : undefined,
-        season: 2024,
+        season,
       });
       setForecast(res);
     } catch (e) {
@@ -83,9 +156,32 @@ export default function ForecastsPage() {
     <div className="space-y-6 max-w-2xl">
       <h2 className="text-2xl font-semibold text-white">Player Forecasts</h2>
       <p className="text-sm text-slate-400">
-        Multiclass PA outcome probabilities from the active model (see Model Lab). Uses 2024 rolling
-        features for batter and pitcher.
+        Hypothetical plate appearance: batter rolling rates vs pitcher rolling rates for the season
+        you choose (must exist in Postgres).
       </p>
+
+      <label className="text-sm text-slate-300">
+        Season
+        <select
+          className="mt-1 block rounded border border-navy-700 bg-navy-800 px-3 py-2 text-white"
+          value={season}
+          onChange={(e) => {
+            setSeason(Number(e.target.value));
+            setBatterId(null);
+            setPitcherId(null);
+            setSummary(null);
+            setBatterPa(null);
+            setPitcherPa(null);
+            setForecast(null);
+          }}
+        >
+          {[2021, 2022, 2023, 2024, 2025].map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <p className="text-sm font-medium text-white">Batter</p>
       <div className="flex gap-2">
@@ -99,13 +195,17 @@ export default function ForecastsPage() {
         <button
           type="button"
           onClick={onSearchBatter}
-          className="rounded bg-accent-violet px-4 py-2 text-sm font-medium text-white hover:bg-accent-purple"
+          disabled={searchingBatter}
+          className="rounded bg-accent-violet px-4 py-2 text-sm font-medium text-white hover:bg-accent-purple disabled:opacity-50"
         >
-          Search
+          {searchingBatter ? "…" : "Search"}
         </button>
       </div>
 
       <ul className="divide-y divide-navy-700 rounded-lg border border-navy-700 max-h-40 overflow-y-auto">
+        {batterResults.length === 0 && !searchingBatter ? (
+          <li className="px-4 py-3 text-slate-500 text-sm">Search results appear here.</li>
+        ) : null}
         {batterResults.map((p) => (
           <li key={p.mlb_player_id}>
             <button
@@ -123,8 +223,9 @@ export default function ForecastsPage() {
 
       {summary && batterId ? (
         <div className="rounded-lg border border-navy-700 bg-navy-900/60 p-4 text-sm space-y-1">
-          <p className="font-semibold text-white">{String(summary.full_name)} — 2024 batter</p>
-          <p>PA: {Number(summary.pa).toLocaleString()}</p>
+          <p className="font-semibold text-white">
+            {String(summary.full_name)} — {season} batter ({batterPa?.toLocaleString()} PAs)
+          </p>
           <p>HR rate: {(Number(summary.hr_rate) * 100).toFixed(2)}%</p>
           <p>K rate: {(Number(summary.k_rate) * 100).toFixed(2)}%</p>
           <p>BB rate: {(Number(summary.bb_rate) * 100).toFixed(2)}%</p>
@@ -143,9 +244,10 @@ export default function ForecastsPage() {
         <button
           type="button"
           onClick={onSearchPitcher}
-          className="rounded bg-accent-violet px-4 py-2 text-sm font-medium text-white hover:bg-accent-purple"
+          disabled={searchingPitcher}
+          className="rounded bg-accent-violet px-4 py-2 text-sm font-medium text-white hover:bg-accent-purple disabled:opacity-50"
         >
-          Search
+          {searchingPitcher ? "…" : "Search"}
         </button>
       </div>
 
@@ -165,10 +267,13 @@ export default function ForecastsPage() {
         ))}
       </ul>
 
-      <div className="rounded-lg border border-navy-700 bg-navy-900/40 p-4 space-y-3">
-        <p className="text-sm text-slate-300">
-          {pitcherId ? `Pitcher: ${pitcherName} (${pitcherId})` : "Select a pitcher above."}
+      {pitcherId ? (
+        <p className="text-sm text-slate-400">
+          {pitcherName}: {pitcherPa != null ? `${pitcherPa.toLocaleString()} PAs as pitcher in ${season}` : "…"}
         </p>
+      ) : null}
+
+      <div className="rounded-lg border border-navy-700 bg-navy-900/40 p-4 space-y-3">
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input
             type="checkbox"
@@ -179,7 +284,7 @@ export default function ForecastsPage() {
         </label>
         <button
           type="button"
-          disabled={loading || !batterId || !pitcherId}
+          disabled={loading || !canForecast}
           onClick={onRunForecast}
           className="rounded bg-accent-violet px-4 py-2 text-sm font-medium text-white hover:bg-accent-purple disabled:opacity-50"
         >
@@ -192,7 +297,7 @@ export default function ForecastsPage() {
         <div className="rounded-lg border border-navy-700 bg-navy-900/60 p-4 text-sm space-y-2">
           <p className="font-semibold text-white">
             {batterName} vs {pitcherName}
-            {stadiumCoors ? " @ Coors" : ""}
+            {stadiumCoors ? " @ Coors" : ""} ({season})
           </p>
           <p className="text-slate-400">
             Model: {forecast.model_version} ({forecast.production_model})

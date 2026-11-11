@@ -102,6 +102,49 @@ def fetch_games_for_season(season: int) -> list[dict[str, Any]]:
     return games
 
 
+def search_people(name: str, *, limit: int = 25) -> list[dict[str, Any]]:
+    """Search MLB Stats API by player name (authoritative display names)."""
+    data = _get("/people/search", {"names": name, "sportId": 1})
+    people: list[dict[str, Any]] = []
+    for p in data.get("people", [])[:limit]:
+        bat = (p.get("batSide") or {}).get("code")
+        throw = (p.get("pitchHand") or {}).get("code")
+        people.append(
+            {
+                "mlb_player_id": int(p["id"]),
+                "full_name": p.get("fullName") or p.get("lastName", ""),
+                "bats": bat,
+                "throws": throw,
+                "primary_position": (p.get("primaryPosition") or {}).get("abbreviation"),
+            }
+        )
+    return people
+
+
+def fetch_people(person_ids: list[int]) -> list[dict[str, Any]]:
+    """Hydrate player metadata for up to 50 IDs per request."""
+    if not person_ids:
+        return []
+    people: list[dict[str, Any]] = []
+    chunk = 50
+    for i in range(0, len(person_ids), chunk):
+        batch = person_ids[i : i + chunk]
+        data = _get("/people", {"personIds": ",".join(str(x) for x in batch)})
+        for p in data.get("people", []):
+            bat = (p.get("batSide") or {}).get("code")
+            throw = (p.get("pitchHand") or {}).get("code")
+            people.append(
+                {
+                    "mlb_player_id": int(p["id"]),
+                    "full_name": p.get("fullName") or f"MLB Player {p['id']}",
+                    "bats": bat,
+                    "throws": throw,
+                    "primary_position": (p.get("primaryPosition") or {}).get("abbreviation"),
+                }
+            )
+    return people
+
+
 def abbreviation_to_team_id(teams: list[dict[str, Any]]) -> dict[str, int]:
     return {
         str(t["abbreviation"]).upper(): int(t["mlb_team_id"])

@@ -7,12 +7,17 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import EtlRun, Game, PaOutcome, Player, PlateAppearance, Stadium, Team
-from data_pipeline.ingest.mlb_api import fetch_games_for_season, fetch_teams, fetch_venues
+from data_pipeline.ingest.mlb_api import (
+    fetch_games_for_season,
+    fetch_people,
+    fetch_teams,
+    fetch_venues,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +291,40 @@ def load_plate_appearances(
         inserted += len(chunk)
     session.commit()
     return inserted
+
+
+def sync_player_names(session: Session) -> dict[str, int]:
+    """Refresh `players.full_name` from MLB Stats API for all PA batter/pitcher IDs."""
+    ids = [
+        int(x)
+        for x in session.execute(
+            text(
+                """
+                SELECT DISTINCT batter_id AS pid FROM plate_appearances
+                UNION
+                SELECT DISTINCT pitcher_id FROM plate_appearances
+                """
+            )
+        ).scalars()
+    ]
+    people = fetch_people(ids)
+    updated = 0
+    for i in range(0, len(people), CHUNK_SIZE):
+        chunk = people[i : i + CHUNK_SIZE]
+        stmt = insert(Player).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[Player.mlb_player_id],
+            set_={
+                "full_name": stmt.excluded.full_name,
+                "bats": stmt.excluded.bats,
+                "throws": stmt.excluded.throws,
+                "primary_position": stmt.excluded.primary_position,
+            },
+        )
+        session.execute(stmt)
+        updated += len(chunk)
+    session.commit()
+    return {"player_ids": len(ids), "rows_upserted": updated}
 
 
 def record_etl_run(

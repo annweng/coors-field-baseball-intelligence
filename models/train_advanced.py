@@ -71,6 +71,16 @@ def _encode_labels(labels: list[str]) -> np.ndarray:
     return np.array([idx[str(y)] for y in labels], dtype=np.int32)
 
 
+def _underlying_xgb_for_export(model: object):
+    if hasattr(model, "get_booster"):
+        return model
+    if hasattr(model, "calibrated_classifiers_"):
+        return model.calibrated_classifiers_[0].estimator
+    if hasattr(model, "estimator"):
+        return getattr(model, "estimator")
+    return None
+
+
 def _order_probas(classes: list, probas: np.ndarray) -> np.ndarray:
     if classes and not isinstance(classes[0], str):
         ordered = probas[:, : len(OUTCOME_CLASSES)]
@@ -193,18 +203,25 @@ def train_and_evaluate(
     }
 
     ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
-        {
-            "model": model,
-            "feature_columns": feature_cols,
-            "outcome_classes": list(OUTCOME_CLASSES),
-            "model_version": MODEL_VERSION,
-            "compact_features": compact_features,
-            "stack_baseline": stack_baseline,
-            "baseline_model": baseline_for_stack,
-        },
-        ARTIFACT_PATH,
-    )
+    bundle = {
+        "model": model,
+        "feature_columns": feature_cols,
+        "outcome_classes": list(OUTCOME_CLASSES),
+        "model_version": MODEL_VERSION,
+        "compact_features": compact_features,
+        "stack_baseline": stack_baseline,
+        "baseline_model": baseline_for_stack,
+    }
+    joblib.dump(bundle, ARTIFACT_PATH)
+
+    xgb_est = model if hasattr(model, "get_booster") else _underlying_xgb_for_export(model)
+    if xgb_est is not None:
+        json_path = ARTIFACT_PATH.parent / f"{MODEL_VERSION}.xgb.json"
+        meta_path = ARTIFACT_PATH.parent / f"{MODEL_VERSION}.meta.joblib"
+        xgb_est.save_model(json_path)
+        meta = {k: v for k, v in bundle.items() if k != "model"}
+        meta["xgb_json"] = json_path.name
+        joblib.dump(meta, meta_path)
 
     ACTIVE_MODEL_FILE.write_text(
         json.dumps(

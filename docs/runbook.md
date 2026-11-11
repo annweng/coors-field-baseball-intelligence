@@ -80,16 +80,21 @@ Artifacts land in `models/artifacts/` (gitignored). Gates:
 
 ## 6. API and UI
 
+**One command:**
+
 ```powershell
-.\scripts\run-api.ps1
+.\scripts\start-dev.ps1
 ```
 
-Separate terminal:
+Starts Postgres, opens API (8000) and UI (5173) in new windows. `run-api.ps1` auto-installs `xgboost` if needed.
+
+**Manual:**
 
 ```powershell
-cd frontend
-npm install
-npm run dev
+docker compose up postgres -d
+pip install -r backend\requirements.txt
+.\scripts\run-api.ps1
+cd frontend; npm run dev
 ```
 
 Open **http://localhost:5173**

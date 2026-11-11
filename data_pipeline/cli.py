@@ -41,6 +41,18 @@ def _normalize_pitches(df):
     return df
 
 
+def cmd_sync_player_names(args: argparse.Namespace) -> None:
+    from data_pipeline.load.postgres import sync_player_names
+
+    session = create_session(settings.database_url)
+    try:
+        stats = sync_player_names(session)
+        record_etl_run(session, "sync_player_names", None, "success", None, stats)
+        logger.info("Synced player names: %s", stats)
+    finally:
+        session.close()
+
+
 def cmd_sync_scores(args: argparse.Namespace) -> None:
     session = create_session(settings.database_url)
     try:
@@ -183,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync = sub.add_parser("sync-metadata", help="Sync MLB teams, venues, and schedule")
     sync.add_argument("--season", type=int, required=True)
     sync.set_defaults(func=cmd_sync_metadata)
+
+    names = sub.add_parser("sync-player-names", help="Refresh player names from MLB Stats API")
+    names.set_defaults(func=cmd_sync_player_names)
 
     scores = sub.add_parser("sync-scores", help="Refresh schedule + final scores for seasons")
     scores.add_argument(

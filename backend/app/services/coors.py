@@ -8,6 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 ROCKIES_TEAM_ID = 115
+# Statcast venue ids for Coors + Rockies home games when PA.stadium_id is null
+COORS_VENUE_IDS = (19, 3312)
 
 OUTCOME_RATE_SQL = """
     AVG(CASE WHEN pa.outcome::text = 'strikeout' THEN 1.0 ELSE 0.0 END) AS k_rate,
@@ -27,6 +29,24 @@ def _season_filter(season: int | None) -> tuple[str, dict[str, Any]]:
     return "AND g.season = :season", {"season": season}
 
 
+def _coors_pa_sql() -> str:
+    """Plate appearances treated as at Coors Field (handles missing pa.stadium_id)."""
+    return """
+        (
+            pa.stadium_id = ANY(:coors_ids)
+            OR g.stadium_id = ANY(:coors_ids)
+            OR g.home_team_id = :rockies_id
+        )
+    """
+
+
+def _coors_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    base = {"coors_ids": list(COORS_VENUE_IDS), "rockies_id": ROCKIES_TEAM_ID}
+    if extra:
+        base.update(extra)
+    return base
+
+
 def park_comparison(conn: Connection, season: int | None = None) -> dict[str, Any]:
     where, params = _season_filter(season)
     coors = conn.execute(
@@ -35,11 +55,11 @@ def park_comparison(conn: Connection, season: int | None = None) -> dict[str, An
             SELECT 'coors' AS site, {OUTCOME_RATE_SQL}
             FROM plate_appearances pa
             JOIN games g ON g.game_pk = pa.game_pk
-            JOIN stadiums s ON s.stadium_id = pa.stadium_id
-            WHERE s.is_coors_field = TRUE AND pa.outcome::text != 'unknown' {where}
+            WHERE pa.outcome::text != 'unknown'
+              AND {_coors_pa_sql()} {where}
             """
         ),
-        params,
+        _coors_params(params),
     ).mappings().first()
 
     league = conn.execute(
@@ -67,10 +87,19 @@ def coors_league_index(conn: Connection, season: int | None = None) -> dict[str,
     c, L = comp.get("coors_field", {}), comp.get("league_average", {})
     if not c.get("pa") or not L.get("pa"):
         return {}
+    def _idx(num: float | None, den: float | None) -> float | None:
+        if num is None or den is None or den == 0:
+            return None
+        return float(num) / float(den)
+
     return {
-        "hr_index": float(c["hr_rate"]) / float(L["hr_rate"]) if L.get("hr_rate") else 0,
-        "hit_index": float(c["hit_rate"]) / float(L["hit_rate"]) if L.get("hit_rate") else 0,
-        "k_index": float(c["k_rate"]) / float(L["k_rate"]) if L.get("k_rate") else 0,
+        "hr_index": _idx(c.get("hr_rate"), L.get("hr_rate")),
+        "hit_index": _idx(c.get("hit_rate"), L.get("hit_rate")),
+        "k_index": _idx(c.get("k_rate"), L.get("k_rate")),
+        "bb_index": _idx(c.get("bb_rate"), L.get("bb_rate")),
+        "double_index": _idx(c.get("double_rate"), L.get("double_rate")),
+        "sample_pa_coors": int(c.get("pa") or 0),
+        "sample_pa_league": int(L.get("pa") or 0),
     }
 
 
@@ -81,11 +110,13 @@ def rockies_offense_splits(conn: Connection, season: int | None = None) -> dict[
         text(
             f"""
             SELECT
-              CASE WHEN s.is_coors_field THEN 'at_coors' ELSE 'away_from_coors' END AS split,
+              CASE
+                WHEN g.home_team_id = :team_id AND UPPER(pa.inning_topbot) = 'BOT' THEN 'at_coors'
+                ELSE 'away_from_coors'
+              END AS split,
               {OUTCOME_RATE_SQL}
             FROM plate_appearances pa
             JOIN games g ON g.game_pk = pa.game_pk
-            LEFT JOIN stadiums s ON s.stadium_id = pa.stadium_id
             WHERE pa.outcome::text != 'unknown'
               AND (
                 (g.home_team_id = :team_id AND UPPER(pa.inning_topbot) = 'BOT')
@@ -95,7 +126,7 @@ def rockies_offense_splits(conn: Connection, season: int | None = None) -> dict[
             GROUP BY 1
             """
         ),
-        {**params, "team_id": ROCKIES_TEAM_ID},
+        {**_coors_params(params), "team_id": ROCKIES_TEAM_ID},
     ).mappings().all()
     return {
         "season": season,
@@ -114,12 +145,13 @@ def seasonal_trend_at_coors(conn: Connection) -> list[dict[str, Any]]:
               {OUTCOME_RATE_SQL}
             FROM plate_appearances pa
             JOIN games g ON g.game_pk = pa.game_pk
-            JOIN stadiums s ON s.stadium_id = pa.stadium_id
-            WHERE s.is_coors_field = TRUE AND pa.outcome::text != 'unknown'
+            WHERE pa.outcome::text != 'unknown'
+              AND {_coors_pa_sql()}
             GROUP BY g.season
             ORDER BY g.season
             """
-        )
+        ),
+        _coors_params(),
     ).mappings().all()
     return [dict(r) for r in rows]
 
@@ -129,19 +161,33 @@ def top_stadiums_by_hr_rate(conn: Connection, season: int | None = None, limit: 
     rows = conn.execute(
         text(
             f"""
-            SELECT s.name, s.stadium_id, s.is_coors_field,
+            SELECT
+              COALESCE(s.name, 'Venue ' || resolved_venue::text) AS name,
+              resolved_venue AS stadium_id,
+              (resolved_venue = ANY(:coors_ids)) AS is_coors_field,
               {OUTCOME_RATE_SQL}
             FROM plate_appearances pa
             JOIN games g ON g.game_pk = pa.game_pk
-            JOIN stadiums s ON s.stadium_id = pa.stadium_id
+            LEFT JOIN stadiums s ON s.stadium_id = COALESCE(
+                pa.stadium_id,
+                g.stadium_id,
+                CASE WHEN g.home_team_id = :rockies_id THEN 19 END
+            )
+            CROSS JOIN LATERAL (
+              SELECT COALESCE(
+                pa.stadium_id,
+                g.stadium_id,
+                CASE WHEN g.home_team_id = :rockies_id THEN 19 END
+              ) AS resolved_venue
+            ) v
             WHERE pa.outcome::text != 'unknown' {where}
-            GROUP BY s.stadium_id, s.name, s.is_coors_field
+            GROUP BY resolved_venue, s.name
             HAVING COUNT(*) >= 500
             ORDER BY hr_rate DESC
             LIMIT :lim
             """
         ),
-        {**params, "lim": limit},
+        {**_coors_params({**params, "lim": limit})},
     ).mappings().all()
     return [dict(r) for r in rows]
 

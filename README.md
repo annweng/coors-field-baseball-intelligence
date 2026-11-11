@@ -40,14 +40,8 @@ Full steps: **[docs/runbook.md](docs/runbook.md)**
 
 ```powershell
 copy .env.example .env
-docker compose up postgres -d
-pip install -r tests\requirements.txt
-python -m data_pipeline.cli run --season 2024
-.\scripts\sync-scores.ps1
-.\scripts\train_xgb.ps1
-.\scripts\train_runs.ps1
-.\scripts\run-api.ps1
-cd frontend && npm install && npm run dev
+# ... data + models once (see docs/runbook.md) ...
+.\scripts\start-dev.ps1
 ```
 
 Open **http://localhost:5173** · API docs **http://localhost:8000/docs**

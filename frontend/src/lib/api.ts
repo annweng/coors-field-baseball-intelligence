@@ -77,6 +77,16 @@ export const fetchPlayerSummary = (id: number, season?: number) =>
     season ? `/players/${id}/summary?season=${season}` : `/players/${id}/summary`,
   );
 
+export const fetchPlayerAvailability = (id: number, season: number = 2024) =>
+  apiGet<{
+    mlb_player_id: number;
+    season: number;
+    pa_as_batter: number;
+    pa_as_pitcher: number;
+    forecast_ok_batter: boolean;
+    forecast_ok_pitcher: boolean;
+  }>(`/players/${id}/availability?season=${season}`);
+
 export const fetchTeams = () => apiGet<{ teams: Array<{ mlb_team_id: number; name: string }> }>("/teams");
 
 export const fetchPlayerForecast = (params: {
