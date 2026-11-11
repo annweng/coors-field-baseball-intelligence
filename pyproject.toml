@@ -1,0 +1,19 @@
+[project]
+name = "coors-field-baseball-intelligence"
+version = "0.1.0"
+description = "MLB analytics: Statcast ETL, PA forecasting, Coors research"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend", "."]
+markers = [
+    "integration: needs Postgres (set DATABASE_URL)",
+]
+filterwarnings = [
+    "ignore:Labels passed were:UserWarning",
+]
+
+[tool.coverage.run]
+omit = ["tests/*", "frontend/*"]

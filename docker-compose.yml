@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cfbi-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cfbi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cfbi_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-coors_field_bi}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cfbi} -d ${POSTGRES_DB:-coors_field_bi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cfbi-backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cfbi}:${POSTGRES_PASSWORD:-cfbi_dev_password}@postgres:5432/${POSTGRES_DB:-coors_field_bi}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - ./models:/app/models
+      - ./data/cache:/app/data/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cfbi-frontend
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  train:
+    build:
+      context: .
+      dockerfile: models/Dockerfile.train
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cfbi}:${POSTGRES_PASSWORD:-cfbi_dev_password}@host.docker.internal:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-coors_field_bi}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/app
+    working_dir: /app
+    profiles:
+      - train
+
+volumes:
+  postgres_data:

@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/layout.tsx","./src/components/statcard.tsx","./src/lib/api.ts","./src/pages/coorslabpage.tsx","./src/pages/datapage.tsx","./src/pages/forecastspage.tsx","./src/pages/modellabpage.tsx","./src/pages/overviewpage.tsx","./src/pages/runspage.tsx"],"errors":true,"version":"5.7.3"}
